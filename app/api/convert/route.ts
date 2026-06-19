@@ -1,129 +1,67 @@
 import { NextRequest, NextResponse } from "next/server";
 import sharp from "sharp";
 
-const GRID_COLS = 80
-const GRID_ROWS = 60
+export async function POST(req: NextRequest) {
+    try {
+        const formData = await req.formData()
+        const file = formData.get('image') as File
+        const gridSize = formData.get('gridSize') as string
+        const [rawCols, rawRows] = (gridSize ?? '80x60').split('x').map(Number)
+        const cols = Number.isFinite(rawCols) && rawCols > 0 ? rawCols : 80
+        const rows = Number.isFinite(rawRows) && rawRows > 0 ? rawRows : 60
 
-const EMOJI_PALETTE = [
-  // Reds & Pinks
-  { emoji: "🔴", r: 220, g: 50,  b: 50  },
-  { emoji: "❤️", r: 200, g: 20,  b: 40  },
-  { emoji: "🍎", r: 180, g: 30,  b: 40  },
-  { emoji: "🌸", r: 255, g: 180, b: 200 },
-  { emoji: "🐷", r: 255, g: 150, b: 180 },
-  { emoji: "🧠", r: 250, g: 130, b: 160 },
+        if (!file) return NextResponse.json({ error: "No image provided" }, { status: 400 })
+        const MAX_SIZE = 10 * 1024 * 1024  // 10MB
+        if (!file.type.startsWith('image/'))
+            return NextResponse.json({ error: "File must be an image" }, { status: 400 })
+        if (file.size > MAX_SIZE)
+            return NextResponse.json({ error: "File too large (max 10MB)" }, { status: 400 })
 
-  // Oranges & Browns
-  { emoji: "🟠", r: 255, g: 140, b: 0   },
-  { emoji: "🟧", r: 255, g: 130, b: 20  },
-  { emoji: "🦊", r: 230, g: 100, b: 30  },
-  { emoji: "🟤", r: 150, g: 90,  b: 50  },
-  { emoji: "🟫", r: 130, g: 70,  b: 40  },
-  { emoji: "🐻", r: 140, g: 80,  b: 50  },
-  { emoji: "💩", r: 110, g: 60,  b: 30  },
-  { emoji: "🍞", r: 230, g: 180, b: 100 },
-  { emoji: "🥔", r: 190, g: 140, b: 80  },
+        const buffer = Buffer.from(await file.arrayBuffer())
+        
+        // Extract both data and info to know exactly how many channels we get back
+        const { data, info } = await sharp(buffer)
+            .normalize()
+            .sharpen({ sigma: 1.5, m1: 0.5, m2: 2.0 })
+            .resize(cols, rows, { fit: 'cover', kernel: sharp.kernel.lanczos3 })
+            .removeAlpha()
+            .raw()
+            .toBuffer({ resolveWithObject: true })
 
-  // Yellows
-  { emoji: "🟡", r: 255, g: 220, b: 50  },
-  { emoji: "🟨", r: 255, g: 220, b: 30  },
-  { emoji: "🌻", r: 255, g: 200, b: 20  },
-  { emoji: "🍌", r: 255, g: 230, b: 80  },
-  { emoji: "🐤", r: 255, g: 240, b: 60  },
-  { emoji: "☀️", r: 255, g: 200, b: 0   },
-  { emoji: "🌙", r: 200, g: 180, b: 80  },
+        const grid: number[][] = []
+        const colors: number[][][] = []
+        const channels = info.channels // 1 for Grayscale, 3 for RGB
 
-  // Greens
-  { emoji: "🟢", r: 50,  g: 180, b: 50  },
-  { emoji: "🟩", r: 60,  g: 180, b: 60  },
-  { emoji: "🐸", r: 90,  g: 190, b: 70  },
-  { emoji: "🐢", r: 70,  g: 150, b: 60  },
-  { emoji: "🌿", r: 60,  g: 140, b: 60  },
-  { emoji: "🌲", r: 40,  g: 100, b: 40  },
-  { emoji: "🍏", r: 140, g: 210, b: 50  },
-  { emoji: "🥑", r: 80,  g: 130, b: 40  },
+        for (let row = 0; row < rows; row++) {
+            const rowBrightness: number[] = []
+            const rowColors: number[][] = []
+            for (let col = 0; col < cols; col++) {
+                // Multiply by dynamic channel count instead of hardcoded 3
+                const idx = (row * cols + col) * channels
+                
+                // Default all to the first byte (perfect for grayscale)
+                let r = data[idx]
+                let g = r
+                let b = r
 
-  // Blues & Cyans
-  { emoji: "🔵", r: 50,  g: 100, b: 220 },
-  { emoji: "🟦", r: 40,  g: 110, b: 220 },
-  { emoji: "💧", r: 100, g: 180, b: 240 },
-  { emoji: "🦋", r: 80,  g: 160, b: 230 },
-  { emoji: "🌊", r: 30,  g: 120, b: 200 },
-  { emoji: "🐳", r: 50,  g: 120, b: 180 },
-  { emoji: "❄️", r: 180, g: 220, b: 255 },
-  { emoji: "🌌", r: 20,  g: 30,  b: 60  },
+                // Override green and blue if it's an RGB image
+                if (channels >= 3) {
+                    g = data[idx + 1]
+                    b = data[idx + 2]
+                }
 
-  // Purples
-  { emoji: "🟣", r: 150, g: 50,  b: 200 },
-  { emoji: "🟪", r: 140, g: 60,  b: 200 },
-  { emoji: "🍇", r: 110, g: 40,  b: 140 },
-  { emoji: "🍆", r: 80,  g: 30,  b: 100 },
-  { emoji: "👾", r: 120, g: 50,  b: 180 },
-
-  // Grays, Blacks, Whites
-  { emoji: "⚪", r: 220, g: 220, b: 220 },
-  { emoji: "⬜", r: 240, g: 240, b: 240 },
-  { emoji: "☁️", r: 230, g: 230, b: 230 },
-  { emoji: "🐁", r: 200, g: 200, b: 200 },
-  { emoji: "🐘", r: 150, g: 150, b: 150 },
-  { emoji: "🐺", r: 120, g: 120, b: 120 },
-  { emoji: "🦍", r: 80,  g: 80,  b: 80  },
-  { emoji: "⚫", r: 30,  g: 30,  b: 30  },
-  { emoji: "⬛", r: 20,  g: 20,  b: 20  },
-
-  // Skin Tones (Crucial for faces)
-  { emoji: "👍🏻", r: 255, g: 220, b: 200 },
-  { emoji: "👍🏼", r: 240, g: 200, b: 160 },
-  { emoji: "👍🏽", r: 200, g: 150, b: 110 },
-  { emoji: "👍🏾", r: 140, g: 90,  b: 60  },
-  { emoji: "👍🏿", r: 80,  g: 50,  b: 40  },
-];
-function findClosestEmoji(r: number, g: number, b: number) {
-    let closest = EMOJI_PALETTE[0];
-    let minDist = Infinity;
-
-    for (const entry of EMOJI_PALETTE) {
-        const rMean = (r + entry.r) / 2;
-        const dR = r - entry.r;
-        const dG = g - entry.g;
-        const dB = b - entry.b;
-
-        const dist = Math.sqrt(
-            (2 + rMean / 256) * Math.pow(dR, 2) +
-            4 * Math.pow(dG, 2) +
-            (2 + (255 - rMean) / 256) * Math.pow(dB, 2)
-        );
-
-        if (dist < minDist) {
-            minDist = dist;
-            closest = entry;
+                // Standard precise Rec. 709 luminance weights
+                const brightness = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+                rowBrightness.push(brightness)
+                // Store raw RGB (0-255 integers) for original-color mode
+                rowColors.push([r, g, b])
+            }
+            grid.push(rowBrightness)
+            colors.push(rowColors)
         }
+
+        return NextResponse.json({ grid, colors })
+    } catch (err) {
+        return NextResponse.json({ error: "Internal processing failure" }, { status: 500 })
     }
-    return closest.emoji;
-}
-export async function POST(req:NextRequest){
-    const formData = await req.formData()
-    const file = formData.get('image') as File
-    if(!file) return NextResponse.json({error:"No image provided"},{status:400})
-
-    const buffer =  Buffer.from(await file.arrayBuffer())
-    const {data} = await sharp(buffer)
-    .resize(GRID_COLS,GRID_ROWS,{fit:'cover'}).removeAlpha()
-    .raw()
-    .toBuffer({resolveWithObject:true})
-
-    const grid :string[][] = []
-
-    for(let row = 0; row<GRID_ROWS;row++){
-        const rowEmojis:string[] = []
-        for(let col = 0; col<GRID_COLS; col++){
-            const idx = (row*GRID_COLS+col)*3
-            const r = data[idx]
-            const g = data[idx+1]
-            const b = data[idx+2]
-            rowEmojis.push(findClosestEmoji(r,g,b))
-        }
-        grid.push(rowEmojis)
-    }
-    return NextResponse.json({grid})
 }
