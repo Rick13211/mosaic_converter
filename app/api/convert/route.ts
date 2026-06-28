@@ -1,67 +1,142 @@
-import { NextRequest, NextResponse } from "next/server";
-import sharp from "sharp";
+import {NextRequest, NextResponse } from "next/server"
+import sharp from "sharp"
+import Replicate from "replicate"
+
+const replicate = new Replicate({ auth: process.env.REPLICATE_API_TOKEN })
+
+function extractBrightnessAndColors(
+  data: Buffer,
+  channels: number,
+  cols: number,
+  rows: number
+): { brightnessArr: Uint8Array; colorsArr: Uint8Array } {
+  const brightnessArr = new Uint8Array(cols * rows)
+  const colorsArr = new Uint8Array(cols * rows * 3)
+
+  for (let i = 0; i < cols * rows; i++) {
+    const idx = i * channels
+    let r = data[idx]
+    let g = channels >= 3 ? data[idx + 1] : r
+    let b = channels >= 3 ? data[idx + 2] : r
+
+    const brightness = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    brightnessArr[i] = Math.min(255, Math.max(0, Math.round(brightness)))
+    colorsArr[i * 3]     = r
+    colorsArr[i * 3 + 1] = g
+    colorsArr[i * 3 + 2] = b
+  }
+
+  return { brightnessArr, colorsArr }
+}
+
+async function processImageBuffer(
+  buffer: Buffer,
+  cols: number,
+  rows: number
+): Promise<{ brightness: string; colors: string }> {
+  const { data, info } = await sharp(buffer)
+    .normalize()
+    .linear(1.2, -10.2)
+    .sharpen({ sigma: 1.5, m1: 0.5, m2: 2.0 })
+    .resize(cols, rows, { fit: 'cover', kernel: sharp.kernel.lanczos3 })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+
+  const { brightnessArr, colorsArr } = extractBrightnessAndColors(
+    data, info.channels, cols, rows
+  )
+
+  return {
+    brightness: Buffer.from(brightnessArr).toString('base64'),
+    colors: Buffer.from(colorsArr).toString('base64'),
+  }
+}
 
 export async function POST(req: NextRequest) {
-    try {
-        const formData = await req.formData()
-        const file = formData.get('image') as File
-        const gridSize = formData.get('gridSize') as string
-        const [rawCols, rawRows] = (gridSize ?? '80x60').split('x').map(Number)
-        const cols = Number.isFinite(rawCols) && rawCols > 0 ? rawCols : 80
-        const rows = Number.isFinite(rawRows) && rawRows > 0 ? rawRows : 60
+  try {
+    const formData = await req.formData()
+    const gridSize = formData.get('gridSize') as string
+    const [rawCols, rawRows] = (gridSize ?? '80x60').split('x').map(Number)
+    const cols = Number.isFinite(rawCols) && rawCols > 0 ? rawCols : 80
+    const rows = Number.isFinite(rawRows) && rawRows > 0 ? rawRows : 60
 
-        if (!file) return NextResponse.json({ error: "No image provided" }, { status: 400 })
-        const MAX_SIZE = 10 * 1024 * 1024  // 10MB
-        if (!file.type.startsWith('image/'))
-            return NextResponse.json({ error: "File must be an image" }, { status: 400 })
-        if (file.size > MAX_SIZE)
-            return NextResponse.json({ error: "File too large (max 10MB)" }, { status: 400 })
+    const imageFile = formData.get('image') as File | null
+    const videoFile = formData.get('video') as File | null
+    const gifFile   = formData.get('gif')   as File | null
 
-        const buffer = Buffer.from(await file.arrayBuffer())
-        
-        // Extract both data and info to know exactly how many channels we get back
-        const { data, info } = await sharp(buffer)
-            .normalize()
-            .sharpen({ sigma: 1.5, m1: 0.5, m2: 2.0 })
-            .resize(cols, rows, { fit: 'cover', kernel: sharp.kernel.lanczos3 })
-            .removeAlpha()
-            .raw()
-            .toBuffer({ resolveWithObject: true })
+    // ── IMAGE ──────────────────────────────────────────────
+    if (imageFile) {
+      const MAX_SIZE = 10 * 1024 * 1024
+      if (!imageFile.type.startsWith('image/'))
+        return NextResponse.json({ error: "File must be an image" }, { status: 400 })
+      if (imageFile.size > MAX_SIZE)
+        return NextResponse.json({ error: "File too large (max 10MB)" }, { status: 400 })
 
-        const grid: number[][] = []
-        const colors: number[][][] = []
-        const channels = info.channels // 1 for Grayscale, 3 for RGB
+      const buffer = Buffer.from(await imageFile.arrayBuffer())
+      const { brightness, colors } = await processImageBuffer(buffer, cols, rows)
 
-        for (let row = 0; row < rows; row++) {
-            const rowBrightness: number[] = []
-            const rowColors: number[][] = []
-            for (let col = 0; col < cols; col++) {
-                // Multiply by dynamic channel count instead of hardcoded 3
-                const idx = (row * cols + col) * channels
-                
-                // Default all to the first byte (perfect for grayscale)
-                let r = data[idx]
-                let g = r
-                let b = r
-
-                // Override green and blue if it's an RGB image
-                if (channels >= 3) {
-                    g = data[idx + 1]
-                    b = data[idx + 2]
-                }
-
-                // Standard precise Rec. 709 luminance weights
-                const brightness = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
-                rowBrightness.push(brightness)
-                // Store raw RGB (0-255 integers) for original-color mode
-                rowColors.push([r, g, b])
-            }
-            grid.push(rowBrightness)
-            colors.push(rowColors)
-        }
-
-        return NextResponse.json({ grid, colors })
-    } catch (err) {
-        return NextResponse.json({ error: "Internal processing failure" }, { status: 500 })
+      return NextResponse.json({ type: 'image', brightness, colors, width: cols, height: rows })
     }
+
+    // ── GIF ────────────────────────────────────────────────
+    if (gifFile) {
+      if (gifFile.type !== 'image/gif')
+        return NextResponse.json({ error: "File must be a GIF" }, { status: 400 })
+      if (gifFile.size > 20 * 1024 * 1024)
+        return NextResponse.json({ error: "GIF too large (max 20MB)" }, { status: 400 })
+
+      const buffer = Buffer.from(await gifFile.arrayBuffer())
+
+      // Handle both CJS default and named export
+    // @ts-ignore
+    const gifFrames = (await import('gif-frames')).default
+
+      const frameData = await gifFrames({
+        url: buffer,
+        frames: 'all',
+        outputType: 'png',
+        cumulative: true,
+      })
+
+      const frames = await Promise.all(
+        frameData.map(async (frame: any) => {
+          // Use stream events instead of for-await
+          const frameBuf = await new Promise<Buffer>((resolve, reject) => {
+            const chunks: Buffer[] = []
+            const stream = frame.getImage()
+            stream.on('data', (chunk: Buffer) => chunks.push(chunk))
+            stream.on('end', () => resolve(Buffer.concat(chunks)))
+            stream.on('error', reject)
+          })
+
+          const { brightness, colors } = await processImageBuffer(frameBuf, cols, rows)
+          const delay = Math.max(16, (frame.frameInfo?.delay || 4) * 10)
+
+          return { brightness, colors, delay }
+        })
+      )
+
+      return NextResponse.json({ type: 'gif', frames, width: cols, height: rows })
+    }
+
+    // ── VIDEO ──────────────────────────────────────────────
+    if (videoFile) {
+      const buffer = Buffer.from(await videoFile.arrayBuffer())
+      const base64 = `data:${videoFile.type};base64,${buffer.toString('base64')}`
+      const output = await replicate.run(
+        "fofr/video-to-frames:ad9374d1b385c86948506b3ad287af9fca23e796685221782d9baa2bc43f14a9",
+        { input: { video: base64 } }
+      )
+      return NextResponse.json({ type: 'video', frames: output })
+    }
+
+    return NextResponse.json({ error: "No file provided" }, { status: 400 })
+
+  } catch (err) {
+    console.error('Full error:', err)
+    return NextResponse.json({
+      error: err instanceof Error ? err.message : "Internal processing failure"
+    }, { status: 500 })
+  }
 }
