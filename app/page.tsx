@@ -116,6 +116,9 @@ export default function Home() {
   }
 
   const handleCopy = () => {
+    if(data?.type === 'gif'){
+      return null
+    }
     if (!data || data.type !== 'image' || !data.brightness) return
     const brightnessArr = decodeBase64(data.brightness)
     const rows: string[] = []

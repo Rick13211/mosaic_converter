@@ -98,9 +98,10 @@ export async function POST(req: NextRequest) {
         outputType: 'png',
         cumulative: true,
       })
-
+      const MAX_FRAMES = 120
+      const framesToProcess = frameData.slice(0, MAX_FRAMES)
       const frames = await Promise.all(
-        frameData.map(async (frame: any) => {
+        framesToProcess.map(async (frame: any) => {
           // Use stream events instead of for-await
           const frameBuf = await new Promise<Buffer>((resolve, reject) => {
             const chunks: Buffer[] = []
@@ -118,17 +119,6 @@ export async function POST(req: NextRequest) {
       )
 
       return NextResponse.json({ type: 'gif', frames, width: cols, height: rows })
-    }
-
-    // ── VIDEO ──────────────────────────────────────────────
-    if (videoFile) {
-      const buffer = Buffer.from(await videoFile.arrayBuffer())
-      const base64 = `data:${videoFile.type};base64,${buffer.toString('base64')}`
-      const output = await replicate.run(
-        "fofr/video-to-frames:ad9374d1b385c86948506b3ad287af9fca23e796685221782d9baa2bc43f14a9",
-        { input: { video: base64 } }
-      )
-      return NextResponse.json({ type: 'video', frames: output })
     }
 
     return NextResponse.json({ error: "No file provided" }, { status: 400 })

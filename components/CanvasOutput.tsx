@@ -52,6 +52,7 @@ export function CanvasOutput({
           >
             💾 Save Tapestry (.png)
           </button>
+          
           <button
             onClick={onCopy}
             className={`px-5 py-2.5 text-stone-950 text-xs font-mono font-bold rounded-xl border-2 border-stone-900 transition-all shadow-[2px_2px_0px_0px_rgba(28,25,23,1)] hover:-translate-x-0.5 hover:-translate-y-0.5 hover:shadow-[4px_4px_0px_0px_rgba(28,25,23,1)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-[1px_1px_0px_0px_rgba(28,25,23,1)] ${copied ? 'bg-emerald-400' : 'bg-amber-400'

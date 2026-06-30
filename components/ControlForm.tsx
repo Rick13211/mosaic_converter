@@ -1,5 +1,7 @@
 'use client'
 
+import { useEffect, useState } from "react"
+
 const GRID_OPTIONS = [
   { value: '80x60',   label: '80 × 60 (Loose Canvas)' },
   { value: '120x90',  label: '120 × 90 (Balanced Weave)' },
@@ -42,7 +44,13 @@ export function ControlForm({
 }: ControlFormProps) {
 
   const activeFile = image || video
-
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  useEffect(()=>{
+    if(!image){setPreviewUrl(null);return}
+    const url = URL.createObjectURL(image)
+    setPreviewUrl(url)
+    return ()=>URL.revokeObjectURL(url)
+  },[image])
   return (
     <form onSubmit={onSubmit} className="lg:col-span-5 space-y-6 bg-white border-2 border-stone-900 rounded-2xl p-6 shadow-[4px_4px_0px_0px_rgba(28,25,23,1)]">
       <div>
@@ -93,7 +101,7 @@ export function ControlForm({
         {/* Preview */}
         {image && (
           <img
-            src={URL.createObjectURL(image)}
+            src={previewUrl || ''}
             alt="Preview"
             className="w-full h-auto rounded-xl border-2 border-stone-900 shadow-[4px_4px_0px_0px_rgba(28,25,23,1)]"
           />
